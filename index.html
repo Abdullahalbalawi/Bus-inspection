@@ -151,6 +151,23 @@
     </div>
   </div>
 
+  <!-- Modal شاشة التوقيع -->
+  <div id="signatureModal" class="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4 hidden no-print">
+    <div class="relative bg-white rounded-lg overflow-hidden w-full max-w-3xl">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+        <div class="font-black">التوقيع</div>
+        <button id="signatureCloseBtn" type="button" class="bg-red-600 text-white rounded-full w-8 h-8 flex items-center justify-center">✕</button>
+      </div>
+      <div class="p-4">
+        <canvas id="signatureModalCanvas" class="w-full h-[60vh] max-h-[420px] border border-black bg-white block" style="touch-action: none;"></canvas>
+        <div class="flex items-center justify-center gap-2 mt-4">
+          <button id="signatureClearBtn" type="button" class="text-sm px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded border border-red-300 cursor-pointer">مسح</button>
+          <button id="signatureSaveBtn" type="button" class="text-sm px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded cursor-pointer">حفظ</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Initialize jsPDF
     window.jsPDF = window.jspdf.jsPDF;
@@ -172,36 +189,174 @@
       if (dataBtn) dataBtn.addEventListener('click', fillTestData);
       if (clearBtn) clearBtn.addEventListener('click', clearForm);
 
-      // Signature Support
-      document.querySelectorAll('canvas').forEach(canvas => {
-        let isDrawing = false;
-        let lastX = 0, lastY = 0;
-        const ctx = canvas.getContext('2d');
+      // Signature Screen (open on click)
+      const signatureModal = document.getElementById('signatureModal');
+      const signatureModalCanvas = document.getElementById('signatureModalCanvas');
+      const signatureCloseBtn = document.getElementById('signatureCloseBtn');
+      const signatureClearBtn = document.getElementById('signatureClearBtn');
+      const signatureSaveBtn = document.getElementById('signatureSaveBtn');
+
+      const SIGNATURE_LINE_WIDTH = 3;
+
+      const signatureBoxes = Array.from(document.querySelectorAll('canvas[title="انقر هنا للتوقيع"]'));
+      let activeSignatureBox = null;
+
+      function resizeCanvasToDisplaySize(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const dpr = window.devicePixelRatio || 1;
+        const displayWidth = Math.round(rect.width * dpr);
+        const displayHeight = Math.round(rect.height * dpr);
+        if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+          const snapshot = document.createElement('canvas');
+          snapshot.width = canvas.width;
+          snapshot.height = canvas.height;
+          const sctx = snapshot.getContext('2d');
+          sctx.drawImage(canvas, 0, 0);
+
+          canvas.width = displayWidth;
+          canvas.height = displayHeight;
+
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, canvas.width, canvas.height);
+        }
+      }
+
+      function openSignatureModalFor(canvas) {
+        if (!signatureModal || !signatureModalCanvas) return;
+        activeSignatureBox = canvas;
+        signatureModal.classList.remove('hidden');
+
+        requestAnimationFrame(() => {
+          resizeCanvasToDisplaySize(signatureModalCanvas);
+
+          const ctx = signatureModalCanvas.getContext('2d');
+          ctx.strokeStyle = '#000';
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.miterLimit = 1;
+          ctx.setLineDash([]);
+          ctx.lineWidth = SIGNATURE_LINE_WIDTH;
+          ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          if (activeSignatureBox) {
+            ctx.drawImage(
+              activeSignatureBox,
+              0,
+              0,
+              activeSignatureBox.width,
+              activeSignatureBox.height,
+              0,
+              0,
+              signatureModalCanvas.width,
+              signatureModalCanvas.height
+            );
+          }
+        });
+      }
+
+      function closeSignatureModal() {
+        if (!signatureModal) return;
+        signatureModal.classList.add('hidden');
+        activeSignatureBox = null;
+      }
+
+      // Open modal when clicking any signature box
+      signatureBoxes.forEach(canvas => {
+        canvas.addEventListener('click', e => {
+          e.preventDefault();
+          openSignatureModalFor(canvas);
+        });
+      });
+
+      // Draw inside modal canvas (Pointer Events: mouse + touch)
+      if (signatureModalCanvas) {
+        const ctx = signatureModalCanvas.getContext('2d');
         ctx.strokeStyle = '#000';
-        ctx.lineWidth = 2;
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 1;
+        ctx.setLineDash([]);
+        ctx.lineWidth = SIGNATURE_LINE_WIDTH;
+
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
 
         function getPos(e) {
-          const rect = canvas.getBoundingClientRect();
-          const scaleX = canvas.width / rect.width;
-          const scaleY = canvas.height / rect.height;
+          const rect = signatureModalCanvas.getBoundingClientRect();
+          const scaleX = signatureModalCanvas.width / rect.width;
+          const scaleY = signatureModalCanvas.height / rect.height;
           return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
         }
 
-        canvas.addEventListener('mousedown', e => { isDrawing = true; [lastX, lastY] = getPos(e); });
-        canvas.addEventListener('mousemove', e => {
-          if (!isDrawing) return;
-          const [x, y] = getPos(e);
-          ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke(); [lastX, lastY] = [x, y];
+        signatureModalCanvas.addEventListener('pointerdown', e => {
+          e.preventDefault();
+          resizeCanvasToDisplaySize(signatureModalCanvas);
+          ctx.strokeStyle = '#000';
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.miterLimit = 1;
+          ctx.setLineDash([]);
+          ctx.lineWidth = SIGNATURE_LINE_WIDTH;
+          isDrawing = true;
+          signatureModalCanvas.setPointerCapture(e.pointerId);
+          [lastX, lastY] = getPos(e);
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
         });
-        canvas.addEventListener('mouseup', () => isDrawing = false);
-        canvas.addEventListener('mouseout', () => isDrawing = false);
 
-        // Touch support
-        canvas.addEventListener('touchstart', e => { e.preventDefault(); isDrawing = true; const t = e.touches[0]; [lastX, lastY] = getPos(t); });
-        canvas.addEventListener('touchmove', e => { e.preventDefault(); if (!isDrawing) return; const t = e.touches[0]; const [x, y] = getPos(t); ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke(); [lastX, lastY] = [x, y]; });
-        canvas.addEventListener('touchend', () => isDrawing = false);
-      });
+        signatureModalCanvas.addEventListener('pointermove', e => {
+          if (!isDrawing) return;
+          e.preventDefault();
+
+          const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
+          for (const ev of events) {
+            const [x, y] = getPos(ev);
+            ctx.lineTo(x, y);
+            lastX = x;
+            lastY = y;
+          }
+          ctx.stroke();
+        });
+
+        function stopDrawing() {
+          isDrawing = false;
+          try { ctx.closePath(); } catch (_) { }
+        }
+
+        signatureModalCanvas.addEventListener('pointerup', stopDrawing);
+        signatureModalCanvas.addEventListener('pointercancel', stopDrawing);
+        signatureModalCanvas.addEventListener('pointerleave', stopDrawing);
+      }
+
+      if (signatureCloseBtn) signatureCloseBtn.addEventListener('click', closeSignatureModal);
+
+      if (signatureClearBtn && signatureModalCanvas) {
+        signatureClearBtn.addEventListener('click', () => {
+          const ctx = signatureModalCanvas.getContext('2d');
+          ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+        });
+      }
+
+      if (signatureSaveBtn && signatureModalCanvas) {
+        signatureSaveBtn.addEventListener('click', () => {
+          if (!activeSignatureBox) return closeSignatureModal();
+          const ctx = activeSignatureBox.getContext('2d');
+          ctx.clearRect(0, 0, activeSignatureBox.width, activeSignatureBox.height);
+          ctx.drawImage(
+            signatureModalCanvas,
+            0,
+            0,
+            signatureModalCanvas.width,
+            signatureModalCanvas.height,
+            0,
+            0,
+            activeSignatureBox.width,
+            activeSignatureBox.height
+          );
+          closeSignatureModal();
+        });
+      }
 
       // Delete Signature
       document.querySelectorAll('button').forEach(btn => {
