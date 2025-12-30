@@ -134,6 +134,42 @@
         padding-left: 12px !important;
       }
     }
+
+    /* Custom Toast Notification */
+    .toast-notification {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-100px);
+      background-color: #333;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      z-index: 9999;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+      font-weight: bold;
+      text-align: center;
+      min-width: 300px;
+      pointer-events: none;
+    }
+    .toast-notification.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+    .toast-notification.error {
+      background-color: #dc2626;
+      border-right: 6px solid #991b1b;
+    }
+    .toast-notification.success {
+      background-color: #16a34a;
+      border-right: 6px solid #14532d;
+    }
+    .toast-notification.info {
+      background-color: #2563eb;
+      border-right: 6px solid #1e3a8a;
+    }
   </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -494,9 +530,9 @@
             heightLeft -= 297;
           }
           pdf.save('نموذج_فحص_حافلة.pdf');
-          alert('تم التصدير بنجاح!');
+          showToast('تم التصدير بنجاح!', 'success');
         } catch (e) {
-          alert('خطأ في التصدير.');
+          showToast('خطأ في التصدير.', 'error');
         }
       }
 
@@ -521,7 +557,7 @@
           nameInputs[2].value = "فهد محمد";
         }
         document.querySelectorAll('table').forEach(updateTableStatus);
-        alert('تم تعبئة البيانات!');
+        showToast('تم تعبئة البيانات!', 'success');
       }
 
       // Clear Form
@@ -536,7 +572,7 @@
         document.querySelectorAll('.percent-badge').forEach(b => { b.value = '0%'; b.style.color = '#dc2626'; });
         damageMarkers = []; renderPrintMarkers(); 
         document.querySelectorAll('table').forEach(updateTableStatus);
-        alert('تم المسح!');
+        showToast('تم المسح!', 'info');
       }
 
       // Smart Form Logic
@@ -561,63 +597,150 @@
         'ملتزم', 'مواظب', 'يبلغ ويتابع', 'سليم'
       ];
 
+      // Custom Toast Function
+      function showToast(message, type = 'info') {
+        let toast = document.getElementById('toast-notification');
+        if (!toast) {
+          toast = document.createElement('div');
+          toast.id = 'toast-notification';
+          toast.className = 'toast-notification';
+          document.body.appendChild(toast);
+        }
+        
+        // Reset classes
+        toast.className = 'toast-notification';
+        // Force reflow
+        void toast.offsetWidth;
+        
+        toast.textContent = message;
+        toast.classList.add(type);
+        toast.classList.add('show');
+
+        // Clear previous timeout if exists
+        if (toast.timeoutId) clearTimeout(toast.timeoutId);
+
+        toast.timeoutId = setTimeout(() => {
+          toast.classList.remove('show');
+        }, 3000);
+      }
+
       function initSmartForm() {
-        document.querySelectorAll('table').forEach(table => {
-          const rows = table.querySelectorAll('tbody tr');
-          
-          rows.forEach(row => {
-            if (row.querySelector('.percent-badge')) return;
+        const desktopRows = Array.from(document.querySelectorAll('table tbody tr')).filter(row => !row.querySelector('.percent-badge'));
+        const mobileCards = Array.from(document.querySelectorAll('.lg\\:hidden .p-4.flex.flex-col.gap-3'));
 
-            const checkboxes = row.querySelectorAll('input[type="checkbox"]');
-            const select = row.querySelector('select');
-            const itemName = row.cells[0].innerText.trim();
+        const count = Math.max(desktopRows.length, mobileCards.length);
 
-            if (checkboxes.length >= 2) {
-              const passCb = checkboxes[0];
-              const failCb = checkboxes[1];
+        for (let i = 0; i < count; i++) {
+           setupSmartPair(desktopRows[i], mobileCards[i]);
+        }
+      }
 
-              // 1. Exclusive Checkbox & Warning
-              passCb.addEventListener('change', () => {
-                if (passCb.checked) failCb.checked = false;
-                updateTableStatus(table);
-              });
+      function setupSmartPair(row, card) {
+         const getInputs = (container) => {
+            if (!container) return null;
+            const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+            const select = container.querySelector('select');
+            // Ensure we have at least 2 checkboxes for pass/fail
+            if (checkboxes.length < 2) return null;
+            return { 
+               pass: checkboxes[0], 
+               fail: checkboxes[1], 
+               select: select,
+               container: container
+            };
+         };
 
-              failCb.addEventListener('change', () => {
-                if (failCb.checked) {
-                  passCb.checked = false;
-                  // Small delay to allow UI update before alert
-                  setTimeout(() => alert(`تنبيه: تم تسجيل فشل في بند "${itemName}"`), 10);
-                }
-                updateTableStatus(table);
-              });
+         const d = getInputs(row);
+         const m = getInputs(card);
 
-              // 2. Smart Dropdown Link
-              if (select) {
-                select.addEventListener('change', () => {
-                  const val = select.value;
-                  if (!val) {
-                    // If cleared, maybe clear checkboxes? Or leave as is?
-                    // Let's leave as is or clear if user wants strict sync.
-                    // Better to just update status.
-                    updateTableStatus(table);
-                    return;
-                  }
-                  
-                  if (PASS_OPTIONS.includes(val)) {
-                    passCb.checked = true;
-                    failCb.checked = false;
-                  } else {
-                    // Assume negative/neutral
-                    failCb.checked = true;
-                    passCb.checked = false;
-                    setTimeout(() => alert(`تنبيه: تم تسجيل فشل في بند "${itemName}" بسبب التقييم "${val}"`), 10);
-                  }
-                  updateTableStatus(table);
-                });
-              }
+         let itemName = "بند";
+         if (row && row.cells) itemName = row.cells[0].innerText.trim();
+         else if (card) {
+            const t = card.querySelector('.font-medium');
+            if (t) itemName = t.innerText.trim();
+         }
+
+         const syncAndTrigger = (finalPass, finalFail, finalSelect) => {
+            // Sync Desktop
+            if (d) {
+               d.pass.checked = finalPass;
+               d.fail.checked = finalFail;
+               if (d.select && finalSelect !== undefined) d.select.value = finalSelect;
+               triggerUpdate(d.container);
             }
-          });
-        });
+            // Sync Mobile
+            if (m) {
+               m.pass.checked = finalPass;
+               m.fail.checked = finalFail;
+               if (m.select && finalSelect !== undefined) m.select.value = finalSelect;
+               triggerUpdate(m.container);
+            }
+         };
+
+         // Desktop Listeners
+         if (d) {
+            d.pass.addEventListener('change', () => {
+               if (d.pass.checked) d.fail.checked = false;
+               syncAndTrigger(d.pass.checked, d.fail.checked, d.select ? d.select.value : undefined);
+            });
+            d.fail.addEventListener('change', () => {
+               if (d.fail.checked) {
+                  d.pass.checked = false;
+                  showToast(`تنبيه: تم تسجيل فشل في بند "${itemName}"`, 'error');
+               }
+               syncAndTrigger(d.pass.checked, d.fail.checked, d.select ? d.select.value : undefined);
+            });
+            if (d.select) {
+               d.select.addEventListener('change', () => {
+                  const val = d.select.value;
+                  let p = d.pass.checked;
+                  let f = d.fail.checked;
+                  if (val) {
+                     if (PASS_OPTIONS.includes(val)) { p = true; f = false; }
+                     else { f = true; p = false; showToast(`تنبيه: تم تسجيل فشل في بند "${itemName}" بسبب التقييم "${val}"`, 'error'); }
+                  }
+                  syncAndTrigger(p, f, val);
+               });
+            }
+         }
+
+         // Mobile Listeners
+         if (m) {
+            m.pass.addEventListener('change', () => {
+               if (m.pass.checked) m.fail.checked = false;
+               syncAndTrigger(m.pass.checked, m.fail.checked, m.select ? m.select.value : undefined);
+            });
+            m.fail.addEventListener('change', () => {
+               if (m.fail.checked) {
+                  m.pass.checked = false;
+                  showToast(`تنبيه: تم تسجيل فشل في بند "${itemName}"`, 'error');
+               }
+               syncAndTrigger(m.pass.checked, m.fail.checked, m.select ? m.select.value : undefined);
+            });
+            if (m.select) {
+               m.select.addEventListener('change', () => {
+                  const val = m.select.value;
+                  let p = m.pass.checked;
+                  let f = m.fail.checked;
+                  if (val) {
+                     if (PASS_OPTIONS.includes(val)) { p = true; f = false; }
+                     else { f = true; p = false; showToast(`تنبيه: تم تسجيل فشل في بند "${itemName}" بسبب التقييم "${val}"`, 'error'); }
+                  }
+                  syncAndTrigger(p, f, val);
+               });
+            }
+         }
+      }
+
+      function triggerUpdate(element) {
+        // If element is in a table, update that table
+        const table = element.closest('table');
+        if (table) {
+          updateTableStatus(table);
+        } else {
+          // If mobile, we just update the global progress bar
+          updateProgressBar();
+        }
       }
 
       function updateTableStatus(table) {
