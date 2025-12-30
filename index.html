@@ -196,49 +196,80 @@
       const signatureClearBtn = document.getElementById('signatureClearBtn');
       const signatureSaveBtn = document.getElementById('signatureSaveBtn');
 
-      const SIGNATURE_LINE_WIDTH = 3;
+      const SIGNATURE_LINE_WIDTH = 3.5;
+      // Increase resolution scale to 3x for ultra-sharp rendering
+      const CANVAS_SCALE = Math.max(window.devicePixelRatio || 1, 3);
 
       const signatureBoxes = Array.from(document.querySelectorAll('canvas[title="انقر هنا للتوقيع"]'));
       let activeSignatureBox = null;
+      let signatureBaseImage = null; // snapshot of existing signature when opening modal
+
+      function setupSignatureContext(ctx) {
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = SIGNATURE_LINE_WIDTH * CANVAS_SCALE;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.setLineDash([]);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+      }
 
       function resizeCanvasToDisplaySize(canvas) {
         const rect = canvas.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        const dpr = window.devicePixelRatio || 1;
-        const displayWidth = Math.round(rect.width * dpr);
-        const displayHeight = Math.round(rect.height * dpr);
+        if (!rect.width || !rect.height) return false;
+        
+        const displayWidth = Math.round(rect.width * CANVAS_SCALE);
+        const displayHeight = Math.round(rect.height * CANVAS_SCALE);
+        
         if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+          // Save current content
           const snapshot = document.createElement('canvas');
           snapshot.width = canvas.width;
           snapshot.height = canvas.height;
           const sctx = snapshot.getContext('2d');
           sctx.drawImage(canvas, 0, 0);
 
+          // Resize
           canvas.width = displayWidth;
           canvas.height = displayHeight;
 
+          // Restore content
           const ctx = canvas.getContext('2d');
+          // Disable smoothing for restoration to avoid compounding blur
+          ctx.imageSmoothingEnabled = false; 
           ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, canvas.width, canvas.height);
+          
+          setupSignatureContext(ctx);
+          return true;
         }
+        return false;
       }
+
+      // Initialize all signature boxes with high resolution
+      signatureBoxes.forEach(canvas => {
+        resizeCanvasToDisplaySize(canvas);
+        setupSignatureContext(canvas.getContext('2d'));
+      });
 
       function openSignatureModalFor(canvas) {
         if (!signatureModal || !signatureModalCanvas) return;
         activeSignatureBox = canvas;
         signatureModal.classList.remove('hidden');
 
-        requestAnimationFrame(() => {
+        // Use setTimeout to ensure the modal is fully rendered and has dimensions
+        setTimeout(() => {
           resizeCanvasToDisplaySize(signatureModalCanvas);
 
           const ctx = signatureModalCanvas.getContext('2d');
-          ctx.strokeStyle = '#000';
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          ctx.miterLimit = 1;
-          ctx.setLineDash([]);
-          ctx.lineWidth = SIGNATURE_LINE_WIDTH;
+          setupSignatureContext(ctx);
+          
+          // Clear and draw the existing signature from the small box
           ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
           if (activeSignatureBox) {
+            // Draw the small signature scaled up. It might be blurry because the source is small.
+            // We enable smoothing to make it look better than pixelated.
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(
               activeSignatureBox,
               0,
@@ -251,7 +282,9 @@
               signatureModalCanvas.height
             );
           }
-        });
+          // Snapshot the current (existing) signature so edits don't erase it during redraws
+          signatureBaseImage = ctx.getImageData(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+        }, 50);
       }
 
       function closeSignatureModal() {
@@ -271,16 +304,23 @@
       // Draw inside modal canvas (Pointer Events: mouse + touch)
       if (signatureModalCanvas) {
         const ctx = signatureModalCanvas.getContext('2d');
-        ctx.strokeStyle = '#000';
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.miterLimit = 1;
-        ctx.setLineDash([]);
-        ctx.lineWidth = SIGNATURE_LINE_WIDTH;
-
         let isDrawing = false;
-        let lastX = 0;
-        let lastY = 0;
+        let points = [];
+
+        function addPoint(pt) {
+          if (!points.length) {
+            points.push(pt);
+            return true;
+          }
+          const last = points[points.length - 1];
+          const dx = pt.x - last.x;
+          const dy = pt.y - last.y;
+          const dist2 = dx * dx + dy * dy;
+          // Ignore ultra-short moves to reduce jitter/dots (increased threshold)
+          if (dist2 < 2) return false;
+          points.push(pt);
+          return true;
+        }
 
         function getPos(e) {
           const rect = signatureModalCanvas.getBoundingClientRect();
@@ -289,20 +329,64 @@
           return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
         }
 
+        function drawSmoothLine() {
+          if (points.length === 0) return;
+
+          setupSignatureContext(ctx);
+          ctx.beginPath();
+          
+          if (points.length < 3) {
+            // If we have only one or two points, just draw a line
+            const p0 = points[0];
+            ctx.moveTo(p0.x, p0.y);
+            for (let i = 1; i < points.length; i++) {
+              ctx.lineTo(points[i].x, points[i].y);
+            }
+          } else {
+            // Use a more advanced smoothing algorithm for 3+ points
+            ctx.moveTo(points[0].x, points[0].y);
+            let i;
+            for (i = 1; i < points.length - 2; i++) {
+              const c = (points[i].x + points[i + 1].x) / 2;
+              const d = (points[i].y + points[i + 1].y) / 2;
+              ctx.quadraticCurveTo(points[i].x, points[i].y, c, d);
+            }
+            // For the last 2 points
+            ctx.quadraticCurveTo(
+              points[i].x,
+              points[i].y,
+              points[i + 1].x,
+              points[i + 1].y
+            );
+          }
+          ctx.stroke();
+        }
+
         signatureModalCanvas.addEventListener('pointerdown', e => {
           e.preventDefault();
-          resizeCanvasToDisplaySize(signatureModalCanvas);
-          ctx.strokeStyle = '#000';
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          ctx.miterLimit = 1;
-          ctx.setLineDash([]);
-          ctx.lineWidth = SIGNATURE_LINE_WIDTH;
+          // Ensure canvas size is correct before starting
+          const resized = resizeCanvasToDisplaySize(signatureModalCanvas);
+          
+          // If we resized, we need to re-capture the base image because the old one is invalid/scaled
+          // But wait, resizeCanvasToDisplaySize restores the content.
+          // So we just need to grab the new state.
+          if (resized || !signatureBaseImage) {
+             signatureBaseImage = ctx.getImageData(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          }
+
           isDrawing = true;
+          points = [];
           signatureModalCanvas.setPointerCapture(e.pointerId);
-          [lastX, lastY] = getPos(e);
-          ctx.beginPath();
-          ctx.moveTo(lastX, lastY);
+          
+          const [x, y] = getPos(e);
+          addPoint({ x, y });
+
+          // Redraw immediately to show the first dot
+          ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          if (signatureBaseImage) {
+            ctx.putImageData(signatureBaseImage, 0, 0);
+          }
+          drawSmoothLine();
         });
 
         signatureModalCanvas.addEventListener('pointermove', e => {
@@ -310,18 +394,34 @@
           e.preventDefault();
 
           const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
+          
           for (const ev of events) {
             const [x, y] = getPos(ev);
-            ctx.lineTo(x, y);
-            lastX = x;
-            lastY = y;
+            addPoint({ x, y });
           }
-          ctx.stroke();
+          
+          // Redraw entire smooth line
+          ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          if (signatureBaseImage) {
+            ctx.putImageData(signatureBaseImage, 0, 0);
+          }
+          drawSmoothLine();
         });
 
         function stopDrawing() {
+          if (isDrawing && points.length > 0) {
+            // This final draw ensures the last segment is committed
+            ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+            if (signatureBaseImage) {
+              ctx.putImageData(signatureBaseImage, 0, 0);
+            }
+            drawSmoothLine();
+          }
           isDrawing = false;
-          try { ctx.closePath(); } catch (_) { }
+          // After the stroke is done, the "base image" for the *next* stroke
+          // becomes the canvas with the stroke we just drew.
+          signatureBaseImage = ctx.getImageData(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          points = [];
         }
 
         signatureModalCanvas.addEventListener('pointerup', stopDrawing);
@@ -335,15 +435,20 @@
         signatureClearBtn.addEventListener('click', () => {
           const ctx = signatureModalCanvas.getContext('2d');
           ctx.clearRect(0, 0, signatureModalCanvas.width, signatureModalCanvas.height);
+          signatureBaseImage = null;
         });
       }
 
       if (signatureSaveBtn && signatureModalCanvas) {
         signatureSaveBtn.addEventListener('click', () => {
           if (!activeSignatureBox) return closeSignatureModal();
-          const ctx = activeSignatureBox.getContext('2d');
-          ctx.clearRect(0, 0, activeSignatureBox.width, activeSignatureBox.height);
-          ctx.drawImage(
+          
+          // Ensure the destination canvas is also set up for high quality
+          const destCtx = activeSignatureBox.getContext('2d');
+          setupSignatureContext(destCtx);
+          
+          destCtx.clearRect(0, 0, activeSignatureBox.width, activeSignatureBox.height);
+          destCtx.drawImage(
             signatureModalCanvas,
             0,
             0,
@@ -415,7 +520,7 @@
           nameInputs[1].value = "خالد سعيد";
           nameInputs[2].value = "فهد محمد";
         }
-        updateFinalEvaluation();
+        document.querySelectorAll('table').forEach(updateTableStatus);
         alert('تم تعبئة البيانات!');
       }
 
@@ -430,20 +535,147 @@
         document.querySelectorAll('canvas').forEach(c => c.getContext('2d').clearRect(0, 0, c.width, c.height));
         document.querySelectorAll('.percent-badge').forEach(b => { b.value = '0%'; b.style.color = '#dc2626'; });
         damageMarkers = []; renderPrintMarkers(); 
+        document.querySelectorAll('table').forEach(updateTableStatus);
         alert('تم المسح!');
       }
 
-      // Final Evaluation
-      function updateFinalEvaluation() {
+      // Smart Form Logic
+      const PASS_OPTIONS = [
+        'ممتازة', 'جيدة', 'سليمة', 'جديدة', 'بحالة جيدة', 
+        'موجودة وتعمل', 'يعمل بكفاءة', 'مكتملة وسارية', 
+        'موجودة وواضحة', 'نظيفة وسليمة', 'مكتملة وسليمة', 
+        'يعمل', 'ملتزم تماماً', 'ملتزم غالباً', 
+        'لائق ومطابق للتعليمات', 'ممتاز', 'جيد', 'ملتزم', 
+        'مواظب', 'مواظب غالباً', 'يبلغ ويتابع', 'سليم',
+        'مقبولة', 'ملاحظة بسيطة', 'خدوش بسيطة', 'شرخ بسيط',
+        'يعمل جزئياً', 'مكتملة وقريبة الانتهاء', 'موجودة وباهتة',
+        'فعالة جزئياً', 'مكتملة مع ملاحظات', 'يعمل أحياناً',
+        'تأخير بسيط', 'مقبول', 'ملتزم مع ملاحظات', 'يبلغ فقط',
+        'متوسطة', 'تحتاج تنظيف', 'يحتاج تنبيه'
+      ];
+
+      const PERFECT_OPTIONS = [
+        'ممتازة', 'سليمة', 'جديدة', 'موجودة وتعمل', 'يعمل بكفاءة', 
+        'مكتملة وسارية', 'موجودة وواضحة', 'نظيفة وسليمة', 'مكتملة وسليمة', 
+        'يعمل', 'ملتزم تماماً', 'لائق ومطابق للتعليمات', 'ممتاز', 
+        'ملتزم', 'مواظب', 'يبلغ ويتابع', 'سليم'
+      ];
+
+      function initSmartForm() {
         document.querySelectorAll('table').forEach(table => {
-          const pass = Array.from(table.querySelectorAll('input[type="checkbox"]')).filter((_,i) => i%2===0);
-          const pct = pass.length ? Math.round((pass.filter(cb=>cb.checked).length / pass.length)*100) : 0;
-          const badge = table.querySelector('.percent-badge');
-          if (badge) {
-            badge.value = pct + '%';
-            badge.style.color = pct >= 80 ? '#16a34a' : pct >= 50 ? '#f59e0b' : '#dc2626';
+          const rows = table.querySelectorAll('tbody tr');
+          
+          rows.forEach(row => {
+            if (row.querySelector('.percent-badge')) return;
+
+            const checkboxes = row.querySelectorAll('input[type="checkbox"]');
+            const select = row.querySelector('select');
+            const itemName = row.cells[0].innerText.trim();
+
+            if (checkboxes.length >= 2) {
+              const passCb = checkboxes[0];
+              const failCb = checkboxes[1];
+
+              // 1. Exclusive Checkbox & Warning
+              passCb.addEventListener('change', () => {
+                if (passCb.checked) failCb.checked = false;
+                updateTableStatus(table);
+              });
+
+              failCb.addEventListener('change', () => {
+                if (failCb.checked) {
+                  passCb.checked = false;
+                  // Small delay to allow UI update before alert
+                  setTimeout(() => alert(`تنبيه: تم تسجيل فشل في بند "${itemName}"`), 10);
+                }
+                updateTableStatus(table);
+              });
+
+              // 2. Smart Dropdown Link
+              if (select) {
+                select.addEventListener('change', () => {
+                  const val = select.value;
+                  if (!val) {
+                    // If cleared, maybe clear checkboxes? Or leave as is?
+                    // Let's leave as is or clear if user wants strict sync.
+                    // Better to just update status.
+                    updateTableStatus(table);
+                    return;
+                  }
+                  
+                  if (PASS_OPTIONS.includes(val)) {
+                    passCb.checked = true;
+                    failCb.checked = false;
+                  } else {
+                    // Assume negative/neutral
+                    failCb.checked = true;
+                    passCb.checked = false;
+                    setTimeout(() => alert(`تنبيه: تم تسجيل فشل في بند "${itemName}" بسبب التقييم "${val}"`), 10);
+                  }
+                  updateTableStatus(table);
+                });
+              }
+            }
+          });
+        });
+      }
+
+      function updateTableStatus(table) {
+        const rows = Array.from(table.querySelectorAll('tbody tr'));
+        let totalItems = 0;
+        let answeredCount = 0;
+        let passedCount = 0;
+        let issues = [];
+
+        rows.forEach(row => {
+          if (row.querySelector('.percent-badge')) return;
+          
+          const checkboxes = row.querySelectorAll('input[type="checkbox"]');
+          if (checkboxes.length < 2) return;
+
+          const passCb = checkboxes[0];
+          const failCb = checkboxes[1];
+          const select = row.querySelector('select');
+          const itemName = row.cells[0].innerText.trim();
+
+          totalItems++;
+          
+          if (passCb.checked) {
+            passedCount++;
+            answeredCount++;
+            // Check if we need to add a note even if passed
+            if (select && select.value && !PERFECT_OPTIONS.includes(select.value)) {
+               issues.push(`- ${itemName}: ${select.value}`);
+            }
+          } else if (failCb.checked) {
+            answeredCount++;
+            const reason = select && select.value ? select.value : 'فشل';
+            issues.push(`- ${itemName}: ${reason}`);
           }
         });
+
+        // Calculate Percentage based on ANSWERED items (Relative Score)
+        // This ensures the score reflects the current evaluation state directly.
+        const pct = answeredCount === 0 ? 0 : Math.round((passedCount / answeredCount) * 100);
+        
+        const badge = table.querySelector('.percent-badge');
+        if (badge) {
+          badge.value = pct + '%';
+          badge.style.color = pct >= 80 ? '#16a34a' : pct >= 50 ? '#f59e0b' : '#dc2626';
+        }
+
+        // Smart Notes
+        const textarea = table.querySelector('textarea');
+        if (textarea) {
+          if (issues.length > 0) {
+            textarea.value = "الملاحظات:\n" + issues.join("\n");
+          } else if (passedCount === totalItems && totalItems > 0) {
+            textarea.value = "جميع البنود سليمة.";
+          } else {
+            textarea.value = "";
+          }
+        }
+        
         updateProgressBar();
       }
 
@@ -562,15 +794,13 @@
         });
       }
 
-      // Event Listener for Auto Evaluation
-      document.addEventListener('change', e => {
-        if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT') updateFinalEvaluation();
-      });
+      // Init Smart Form
+      initSmartForm();
 
       // Init
       const today = new Date().toISOString().split('T')[0];
       document.querySelectorAll('input[type="date"]:not([value])').forEach(i => i.value = today);
-      updateFinalEvaluation();
+      document.querySelectorAll('table').forEach(updateTableStatus);
       renderPrintMarkers();
     });
   </script>
